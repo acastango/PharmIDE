@@ -40,3 +40,6 @@ dist/
 
 # Environment
 .env
+
+# Claude Code memory
+.claude/

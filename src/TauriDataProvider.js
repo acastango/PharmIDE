@@ -69,13 +69,20 @@ function formatStrengthWithForm(rawStrength, form) {
   return `${s} ${form}`;
 }
 
+// ─── Helpers ───────────────────────────────────────────────────────────
+
+function safeParseJson(str, fallback) {
+  try { return str ? JSON.parse(str) : fallback; }
+  catch { return fallback; }
+}
+
 // ─── Provider ─────────────────────────────────────────────────────────
 
 export function createTauriDataProvider(mockFallback) {
 
   return {
     // ── Drug search — LIGHTWEIGHT, no manufacturer/NDC loading ──
-    searchDrugs: async (query) => {
+    searchDrugs: async (query, limit = 12) => {
       if (!query || query.length < 2) return [];
 
       const parts = query.split(",").map(p => p.trim()).filter(Boolean);
@@ -96,61 +103,42 @@ export function createTauriDataProvider(mockFallback) {
 
         if (!hits || hits.length === 0) return [];
 
-        // Group by drug_id, collect all strength+form combos
+        // Group by drug_id + displayStrength — one entry per specific form.
+        // This keeps "500mg tablet" and "500mg tablet, extended release" as
+        // separate selectable items so the user always picks an exact form.
+        const nameQLower = nameQ.toLowerCase();
         const drugMap = new Map();
         for (const hit of hits) {
-          if (!drugMap.has(hit.drugId)) {
-            drugMap.set(hit.drugId, {
-              id: `db-${hit.drugId}`,
-              _backendId: hit.drugId,
-              name: hit.drugName,
-              brandNames: [],
-              strengths: [],
-              _forms: new Set(),
-              form: '',  // set after collecting all forms
-              route: hit.route || 'oral',
-              schedule: hit.deaSchedule || 'Rx',
-              drugClass: hit.drugClass || '',
-              maxDaily: null,
-              commonDoses: [],
-              ndcByStrength: {},
-              _score: 0,
-              _matchedStrength: null,
-            });
-          }
-
-          const entry = drugMap.get(hit.drugId);
           const displayStrength = formatStrengthWithForm(hit.strength, hit.form);
+          const key = `${hit.drugId}\x00${displayStrength}`;
+          if (drugMap.has(key)) continue;
 
-          if (!entry.strengths.includes(displayStrength)) {
-            entry.strengths.push(displayStrength);
-          }
-          entry._forms.add(hit.form);
+          let score = 0;
+          const name = hit.drugName.toLowerCase();
+          if (name === nameQLower) score -= 100;
+          else if (name.startsWith(nameQLower)) score -= 50;
+          else if (name.split(/[\s\-\/]/).some(w => w.startsWith(nameQLower))) score -= 30;
+          else if (name.includes(nameQLower)) score -= 20;
+          if (strengthQ && displayStrength.toLowerCase().includes(strengthQ.toLowerCase())) score -= 5;
 
-          if (strengthQ && displayStrength.toLowerCase().includes(strengthQ.toLowerCase())) {
-            entry._matchedStrength = displayStrength;
-            entry._score = -5;
-          }
+          drugMap.set(key, {
+            id: `db-${hit.drugId}`,
+            _backendId: hit.drugId,
+            name: hit.drugName,
+            brandNames: [],
+            strengths: [displayStrength],
+            form: hit.form,
+            route: hit.route || 'oral',
+            schedule: hit.deaSchedule || 'Rx',
+            drugClass: hit.drugClass || '',
+            _matchedStrength: displayStrength,
+            _score: score,
+          });
         }
 
-        // Build final results
-        const nameQLower = nameQ.toLowerCase();
         return Array.from(drugMap.values())
-          .map(d => {
-            // Join all forms: "tablet, capsule" or just "tablet"
-            d.form = Array.from(d._forms).join(', ');
-            delete d._forms;
-
-            let score = d._score || 0;
-            const name = d.name.toLowerCase();
-            if (name === nameQLower) score -= 100;
-            else if (name.startsWith(nameQLower)) score -= 50;
-            else if (name.includes(nameQLower)) score -= 20;
-            d._score = score;
-            return d;
-          })
           .sort((a, b) => a._score - b._score || a.name.localeCompare(b.name))
-          .slice(0, 12);
+          .slice(0, limit);
       } catch (e) {
         console.error('Tauri searchDrugs failed:', e);
         return mockFallback?.searchDrugs(query) || [];
@@ -209,6 +197,10 @@ export function createTauriDataProvider(mockFallback) {
           for (const f of forms) {
             const displayStrength = formatStrengthWithForm(s.strength, f.form);
 
+            // Only load NDCs for the form that exactly matches what was selected.
+            // Prevents "tablet" NDCs from appearing when "tablet, extended release" was chosen.
+            if (strength && displayStrength.toLowerCase().trim() !== strength.toLowerCase().trim()) continue;
+
             // Get NDC-level products (one row per package)
             const dispensable = await invoke('get_dispensable_products', { formId: f.id });
             if (!dispensable) continue;
@@ -246,6 +238,17 @@ export function createTauriDataProvider(mockFallback) {
       }
     },
 
+    // ── Inventory batch lookup ──
+    getInventoryBatch: async (ndcCodes) => {
+      if (!ndcCodes?.length) return [];
+      try {
+        return await invoke('get_inventory_batch', { ndcCodes }) || [];
+      } catch (e) {
+        console.error('get_inventory_batch failed:', e);
+        return [];
+      }
+    },
+
     // ── NDC lookup ──
     getProductByNdc: async (ndc) => {
       try {
@@ -272,15 +275,339 @@ export function createTauriDataProvider(mockFallback) {
       }
     },
 
-    // ── Pass through to mock ──
-    searchPrescribers: (...args) => mockFallback?.searchPrescribers(...args) || [],
-    getPrescriber: (...args) => mockFallback?.getPrescriber(...args) || null,
+    // ── Session management ─────────────────────────────────────────────
+
+    startSession: async (userId, userRole) => {
+      try {
+        return await invoke('start_session', { userId, userRole });
+      } catch (e) {
+        console.error('start_session failed:', e);
+        return null;
+      }
+    },
+
+    endSession: async () => {
+      try {
+        await invoke('end_session');
+      } catch (e) {
+        console.error('end_session failed:', e);
+      }
+    },
+
+    // ── Audit chain verification ───────────────────────────────────────
+
+    verifyAuditChain: async (startSeq = null, endSeq = null) => {
+      try {
+        return await invoke('verify_audit_chain', { startSeq, endSeq });
+      } catch (e) {
+        console.error('verify_audit_chain failed:', e);
+        return null;
+      }
+    },
+
+    // ── Prescribers ────────────────────────────────────────────────────
+
+    getAllPrescribers: async () => {
+      try {
+        return await invoke('get_all_prescribers') || [];
+      } catch (e) {
+        console.error('get_all_prescribers failed:', e);
+        return mockFallback?.getAllPrescribers?.() || [];
+      }
+    },
+
+    getPrescriber: async (id) => {
+      try {
+        return await invoke('get_prescriber', { id }) || null;
+      } catch (e) {
+        console.error('get_prescriber failed:', e);
+        return mockFallback?.getPrescriber?.(id) || null;
+      }
+    },
+
+    searchPrescribersDb: async (query) => {
+      try {
+        return await invoke('search_prescribers_db', { query }) || [];
+      } catch (e) {
+        console.error('search_prescribers_db failed:', e);
+        return mockFallback?.searchPrescribers?.(query) || [];
+      }
+    },
+
+    upsertPrescriber: async (prescriber) => {
+      try {
+        return await invoke('upsert_prescriber', { prescriber });
+      } catch (e) {
+        console.error('upsert_prescriber failed:', e);
+        throw e;
+      }
+    },
+
+    // ── Pass through to mock (frontend-only logic) ──
     getProduct: (...args) => mockFallback?.getProduct(...args) || null,
-    getEOrder: (...args) => mockFallback?.getEOrder(...args) || null,
-    getAllEOrders: (...args) => mockFallback?.getAllEOrders(...args) || [],
+    // resolveEOrder: drug/prescriber matching stays frontend-side (needs DRUG_DATABASE)
     resolveEOrder: (...args) => mockFallback?.resolveEOrder(...args) || null,
-    submitRx: (...args) => mockFallback?.submitRx(...args) || {},
     getRefillLimit: (...args) => mockFallback?.getRefillLimit(...args) || 99,
     getScheduleLabel: (...args) => mockFallback?.getScheduleLabel(...args) || '',
+
+    // ── E-Orders ──────────────────────────────────────────────────────
+
+    // Returns all pending eorders from DB, sorted oldest-first.
+    // Each eorder has: id, messageId, receivedAt, patientId, status,
+    //   rawFields (JSON string), transcribed (JSON string).
+    getAllEOrders: async () => {
+      try {
+        const rows = await invoke('get_all_eorders') || [];
+        return rows.map(eo => ({
+          ...eo,
+          raw: safeParseJson(eo.rawFields, {}),
+          transcribed: safeParseJson(eo.transcribed, {}),
+        }));
+      } catch (e) {
+        console.error('get_all_eorders failed:', e);
+        return mockFallback?.getAllEOrders() || [];
+      }
+    },
+
+    // Returns the pending eorder for a given patient (by patient_id).
+    getEOrder: async (patientId) => {
+      try {
+        const eo = await invoke('get_eorder_by_patient', { patientId });
+        if (!eo) {
+          // Not in DB — may be an AI-generated script stored in RUNTIME_EORDERS
+          return mockFallback?.getEOrder(patientId) || null;
+        }
+        return {
+          ...eo,
+          raw: safeParseJson(eo.rawFields, {}),
+          transcribed: safeParseJson(eo.transcribed, {}),
+        };
+      } catch (e) {
+        console.error('get_eorder_by_patient failed:', e);
+        return mockFallback?.getEOrder(patientId) || null;
+      }
+    },
+
+    // Mark an eorder resolved (clears it from the pending queue).
+    // Call when tech opens an eorder for data entry.
+    markEOrderResolved: async (eorderId) => {
+      try {
+        await invoke('mark_eorder_resolved', { id: eorderId });
+      } catch (e) {
+        console.error('mark_eorder_resolved failed:', e);
+      }
+    },
+
+    // Ingest a raw NCPDP SCRIPT XML string into the eorders table.
+    // Useful for manual testing or future SureScripts / file-drop wiring.
+    ingestEOrderXml: async (xmlPayload, patientId = null) => {
+      try {
+        const eo = await invoke('ingest_eorder_xml', { xmlPayload, patientId });
+        if (!eo) return null;
+        return {
+          ...eo,
+          raw: safeParseJson(eo.rawFields, {}),
+          transcribed: safeParseJson(eo.transcribed, {}),
+        };
+      } catch (e) {
+        console.error('ingest_eorder_xml failed:', e);
+        return null;
+      }
+    },
+
+    // ── AI / E-Script Generator ────────────────────────────────────────
+
+    // Call Haiku via Rust (avoids browser CORS). Returns raw JSON string.
+    generateEScripts: async (apiKey) => {
+      try {
+        return await invoke('generate_escripts', { apiKey });
+      } catch (e) {
+        throw new Error(String(e));
+      }
+    },
+
+    // ── Rx Engine ──────────────────────────────────────────────────────
+
+    getUsers: async () => {
+      try {
+        return await invoke('get_users') || [];
+      } catch (e) {
+        console.error('get_users failed:', e);
+        // Offline fallback — still lets the app function without Tauri
+        return [
+          { id: 'usr-tech-1', name: 'Alex Chen',      role: 'tech' },
+          { id: 'usr-tech-2', name: 'Jordan Mills',    role: 'tech' },
+          { id: 'usr-rph-1',  name: 'Dr. Sarah Park',  role: 'rph'  },
+          { id: 'usr-rph-2',  name: 'Dr. Marcus Webb', role: 'rph'  },
+        ];
+      }
+    },
+
+    createPrescription: async (patientId, eorderData, actorId) => {
+      try {
+        return await invoke('create_prescription', {
+          patientId,
+          eorderData: typeof eorderData === 'string' ? eorderData : JSON.stringify(eorderData),
+          actorId,
+        });
+      } catch (e) {
+        console.error('create_prescription failed:', e);
+        return null;
+      }
+    },
+
+    transitionRx: async (rxId, action, actorId, actorRole, payload = {}) => {
+      try {
+        return await invoke('transition_rx', {
+          rxId,
+          action,
+          actorId,
+          actorRole,
+          payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+        });
+      } catch (e) {
+        console.error('transition_rx failed:', e);
+        throw e; // Let caller handle — transition failures should be surfaced
+      }
+    },
+
+    getPrescription: async (rxId) => {
+      try {
+        return await invoke('get_prescription', { rxId });
+      } catch (e) {
+        console.error('get_prescription failed:', e);
+        return null;
+      }
+    },
+
+    getPrescriptionsByPatient: async (patientId) => {
+      try {
+        return await invoke('get_prescriptions_by_patient', { patientId }) || [];
+      } catch (e) {
+        console.error('get_prescriptions_by_patient failed:', e);
+        return [];
+      }
+    },
+
+    getActivePrescriptions: async () => {
+      try {
+        return await invoke('get_active_prescriptions') || [];
+      } catch (e) {
+        console.error('get_active_prescriptions failed:', e);
+        return [];
+      }
+    },
+
+    getAllPrescriptions: async () => {
+      try {
+        return await invoke('get_all_prescriptions') || [];
+      } catch (e) {
+        console.error('get_all_prescriptions failed:', e);
+        return [];
+      }
+    },
+
+    getPrescriptionsByStatus: async (status) => {
+      try {
+        return await invoke('get_prescriptions_by_status', { status }) || [];
+      } catch (e) {
+        console.error('get_prescriptions_by_status failed:', e);
+        return [];
+      }
+    },
+
+    sellPrescription: async (rxId, actorId, actorRole) => {
+      try {
+        return await invoke('transition_rx', { rxId, action: 'SELL_RX', actorId, actorRole, payload: '{}' });
+      } catch (e) {
+        console.error('sell_prescription failed:', e);
+        return null;
+      }
+    },
+
+    getQueueCounts: async () => {
+      try {
+        return await invoke('get_queue_counts') || {};
+      } catch (e) {
+        console.error('get_queue_counts failed:', e);
+        return {};
+      }
+    },
+
+    getEventsByRx: async (rxId) => {
+      try {
+        return await invoke('get_events_by_rx', { rxId }) || [];
+      } catch (e) {
+        console.error('get_events_by_rx failed:', e);
+        return [];
+      }
+    },
+
+    getEventsByDateRange: async (start, end) => {
+      try {
+        return await invoke('get_events_by_date_range', { start, end }) || [];
+      } catch (e) {
+        console.error('get_events_by_date_range failed:', e);
+        return [];
+      }
+    },
+
+    // ── Patients ──────────────────────────────────────────────────────
+
+    getPatient: async (id) => {
+      try {
+        return await invoke('get_patient', { id }) || null;
+      } catch (e) {
+        console.error('get_patient failed:', e);
+        return null;
+      }
+    },
+
+    upsertPatient: async (patient) => {
+      try {
+        return await invoke('upsert_patient', { patient }) || null;
+      } catch (e) {
+        console.error('upsert_patient failed:', e);
+        return null;
+      }
+    },
+
+    getAllPatients: async () => {
+      try {
+        return await invoke('get_all_patients') || [];
+      } catch (e) {
+        console.error('get_all_patients failed:', e);
+        return [];
+      }
+    },
+
+    searchPatients: async (query) => {
+      try {
+        return await invoke('search_patients', { query }) || [];
+      } catch (e) {
+        console.error('search_patients failed:', e);
+        return [];
+      }
+    },
+
+    // ── Fill History ──────────────────────────────────────────────────
+
+    getFillHistory: async (patientId) => {
+      try {
+        return await invoke('get_fill_history', { patientId }) || [];
+      } catch (e) {
+        console.error('get_fill_history failed:', e);
+        return mockFallback?.getFillHistory?.(patientId) || [];
+      }
+    },
+
+    appendFillHistory: async (entry) => {
+      try {
+        return await invoke('append_fill_history', { entry });
+      } catch (e) {
+        console.error('append_fill_history failed:', e);
+        return null;
+      }
+    },
   };
 }

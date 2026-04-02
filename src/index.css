@@ -1,5 +1,5 @@
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Outfit', -apple-system, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
@@ -52,6 +52,12 @@ button:hover {
 button:focus,
 button:focus-visible {
   outline: 4px auto -webkit-focus-ring-color;
+}
+
+@keyframes escriptPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(74, 190, 106, 0.7); }
+  70%  { box-shadow: 0 0 0 6px rgba(74, 190, 106, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 190, 106, 0); }
 }
 
 @media (prefers-color-scheme: light) {

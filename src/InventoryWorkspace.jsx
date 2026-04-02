@@ -229,9 +229,9 @@ export default function InventoryWorkspace({ color }) {
                       display: "inline-block", padding: "2px 6px", borderRadius: 3,
                       fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 12,
                       cursor: "pointer", minWidth: 32, textAlign: "right",
-                      color: onHand == null ? "#cbd5e1" : isLow ? "#dc2626" : "#059669",
-                      background: onHand == null ? "transparent" : isLow ? "#fef2f2" : "#f0fdf4",
-                      border: `1px solid ${onHand == null ? '#e2e8f0' : isLow ? '#fecaca' : '#bbf7d0'}`,
+                      color: onHand == null ? "#cbd5e1" : isLow ? "#dc2626" : "#8b949e",
+                      background: onHand == null ? "transparent" : isLow ? "#fef2f2" : "transparent",
+                      border: `1px solid ${onHand == null ? '#e2e8f0' : isLow ? '#fecaca' : '#30363d'}`,
                     }}>{onHand != null ? onHand : '—'}</span>
                   )}
                 </div>

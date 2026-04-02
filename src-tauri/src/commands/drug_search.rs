@@ -658,7 +658,19 @@ pub fn get_dispensable_products(form_id: i64) -> Result<Vec<DispensableProduct>,
 #[tauri::command]
 pub fn lookup_ndc(ndc: String) -> Result<Option<NdcLookup>, String> {
     let conn = db::get();
-    let ndc_clean: String = ndc.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    // DB layout (confirmed from schema):
+    //   ndc_code  — 4-4-2 dashed, no leading zero on labeler segment  e.g. "0093-2267-01"
+    //   ndc_11    — plain 11-digit with leading zero                  e.g. "00093226701"
+    //
+    // Strategy: normalise any input to 11 digits and match against ndc_11.
+    // This covers all common user input formats:
+    //   "00093-2267-01"  (5-4-2) → strip dashes → "00093226701" (11 digits) → exact match
+    //   "0093-2267-01"   (4-4-2) → strip dashes → "0093226701"  (10 digits) → pad → "00093226701"
+    //   "00093226701"    (plain 11)                              (11 digits) → exact match
+    //   "0093226701"     (plain 10)                             (10 digits) → pad → "00093226701"
+    let digits: String = ndc.chars().filter(|c| c.is_ascii_digit()).collect();
+    let ndc_11 = format!("{:0>11}", &digits);
 
     let result = conn
         .query_row(
@@ -669,10 +681,8 @@ pub fn lookup_ndc(ndc: String) -> Result<Option<NdcLookup>, String> {
              JOIN form f ON p.form_id = f.form_id
              JOIN strength s ON f.strength_id = s.strength_id
              JOIN drug d ON s.drug_id = d.drug_id
-             WHERE REPLACE(REPLACE(n.ndc_code, '-', ''), ' ', '') = ?1
-                OR n.ndc_code = ?2
-                OR n.ndc_11 = ?1",
-            rusqlite::params![ndc_clean, ndc],
+             WHERE n.ndc_11 = ?1",
+            rusqlite::params![ndc_11],
             |row| {
                 Ok(NdcLookup {
                     ndc: row.get(0)?,

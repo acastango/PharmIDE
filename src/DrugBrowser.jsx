@@ -18,11 +18,11 @@ async function invoke(cmd, args) { return (await getInvoke())(cmd, args); }
 
 const C = {
   bg: '#0d1117', surface: '#161b22', surfaceHover: '#1c2333',
-  surfaceActive: '#21283b', border: '#30363d', borderFocus: '#4fc3f7',
+  surfaceActive: '#21283b', border: '#30363d', borderFocus: '#4a5568',
   text: '#e6edf3', textMuted: '#8b949e', textDim: '#484f58',
-  accent: '#4fc3f7', accentDim: '#1a3a4a',
-  green: '#3fb950', yellow: '#d29922', red: '#f85149',
-  purple: '#bc8cff', orange: '#f0883e',
+  accent: '#8b949e', accentDim: '#1c2333',
+  green: '#8b949e', yellow: '#8b949e', red: '#f85149',
+  purple: '#8b949e', orange: '#8b949e',
 };
 const F = {
   sans: "'IBM Plex Sans', -apple-system, sans-serif",

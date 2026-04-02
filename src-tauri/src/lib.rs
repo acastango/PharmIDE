@@ -1,8 +1,10 @@
 use tauri::Manager;
 
+mod app_db;
 mod db;
 mod commands;
 mod models;
+mod sys_clock;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,9 +28,16 @@ pub fn run() {
             commands::inventory::init_inventory(&inv_path.to_string_lossy())
                 .expect("failed to initialize inventory database");
 
+            let pharmide_path = app_data.join("pharmide.db");
+            app_db::init(&pharmide_path.to_string_lossy())
+                .expect("failed to open app database");
+            commands::rx_engine::init_pharmide_db()
+                .expect("failed to initialize app schema");
+
             println!("PharmIDE backend ready.");
             println!("  Drug DB: {:?}", resource_path);
             println!("  Inventory DB: {:?}", inv_path);
+            println!("  App DB: {:?}", pharmide_path);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -52,9 +61,41 @@ pub fn run() {
             commands::inventory::get_inventory_batch,
             commands::inventory::update_inventory,
             commands::inventory::adjust_on_hand,
-            // Queue
-            commands::queue::get_queue_state,
-            commands::queue::update_rx_status,
+            // Rx Engine
+            commands::rx_engine::create_prescription,
+            commands::rx_engine::transition_rx,
+            commands::rx_engine::get_prescription,
+            commands::rx_engine::get_prescriptions_by_patient,
+            commands::rx_engine::get_prescriptions_by_status,
+            commands::rx_engine::get_active_prescriptions,
+            commands::rx_engine::get_all_prescriptions,
+            commands::rx_engine::get_queue_counts,
+            commands::rx_engine::get_events_by_rx,
+            commands::rx_engine::get_events_by_date_range,
+            commands::rx_engine::get_users,
+            commands::rx_engine::start_session,
+            commands::rx_engine::end_session,
+            commands::rx_engine::verify_audit_chain,
+            // Patients
+            commands::patients::get_patient,
+            commands::patients::upsert_patient,
+            commands::patients::get_all_patients,
+            commands::patients::search_patients,
+            // AI
+            commands::ai::generate_escripts,
+            // E-Orders
+            commands::rx_engine::ingest_eorder_xml,
+            commands::rx_engine::get_all_eorders,
+            commands::rx_engine::get_eorder_by_patient,
+            commands::rx_engine::mark_eorder_resolved,
+            // Prescribers
+            commands::rx_engine::get_all_prescribers,
+            commands::rx_engine::get_prescriber,
+            commands::rx_engine::search_prescribers_db,
+            commands::rx_engine::upsert_prescriber,
+            // Fill History
+            commands::rx_engine::append_fill_history,
+            commands::rx_engine::get_fill_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PharmIDE");

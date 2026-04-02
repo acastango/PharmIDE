@@ -1,16 +1,41 @@
-# React + Vite
+# PharmIDE
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A Tauri v2 desktop application for pharmacy workflow management. Models the full prescription lifecycle inside a spatial, patient-centric workspace interface.
 
-Currently, two official plugins are available:
+## What It Does
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Patient workspaces** — each patient gets an independent workspace with draggable/resizable tiles on a 12×8 grid
+- **Full Rx pipeline** — e-order intake → tech entry → RPh verification → fill → fill verification → dispensing
+- **Merkle audit chain** — every state transition is hashed and chained for tamper-evident logging
+- **Prescriber directory** — searchable, editable, with name-change tracking
+- **E-script generator** — AI-generated mock e-orders via Claude Haiku
+- **Inventory management** — on-hand tracking with adjustment history
+- **Role-based access** — tech and RPh roles with enforced permission boundaries
 
-## React Compiler
+## Tech Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Layer | Technology |
+|-------|-----------|
+| UI | React 19 (JSX) |
+| Build | Vite 7 |
+| Desktop | Tauri v2 |
+| Backend | Rust |
+| Database | SQLite (rusqlite) |
 
-## Expanding the ESLint configuration
+## Dev Setup
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+npm install
+npm run tauri dev       # Full dev — Vite + Rust hot reload
+npm run dev             # Frontend only
+npm run lint            # ESLint
+npm run tauri build     # Production build (Windows WIX installer)
+```
+
+## Databases
+
+| File | Purpose |
+|------|---------|
+| `drug_tree.db` | FDA drug reference (read-only, bundled) |
+| `pharmide.db` | Prescriptions, patients, prescribers, audit log, users |
+| `inventory.db` | Pharmacy inventory |
